@@ -1,0 +1,719 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,bm,booktabs,array,multirow,longtable,enumitem,xcolor,hyperref,microtype}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\hypersetup{colorlinks=true,linkcolor=black,urlcolor=blue,citecolor=black}
+\setlist{nosep,leftmargin=*}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\Hh}{\mathcal{H}}
+\newcommand{\A}{\mathcal{A}}
+\newcommand{\D}{\mathcal{D}}
+\newcommand{\T}{\mathcal{T}}
+\newcommand{\R}{\mathcal{R}}
+\newcommand{\ind}{\mathbb{I}}
+\newcommand{\KL}{D_{\mathrm{KL}}}
+\newcommand{\TODO}[1]{\textcolor{red}{[TODO: #1]}}
+
+\title{Toward Reinforcement-Learned Scientific Experimentation in LLMs\\\large Complete Experimental Record, Validated Findings, Failed Routes, and Current Bottleneck}
+\author{}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document consolidates the full experimental development of a project whose long-term goal is to train a large language model (LLM) to conduct scientific experiments as a closed-loop, adaptive policy. The desired capability is not merely to solve one causal-discovery task, maximize a fixed acquisition function, or imitate a precomputed experimental-design oracle. Rather, given a natural-language scientific purpose and an evolving experimental history, the model should choose an experiment, observe its outcome, revise its subsequent experimental strategy, decide when to stop, and ultimately solve the scientific task efficiently. We summarize the initial causal-system pilot, the epistemic-RL ablations, the SFT initialization study, the language-conditioned utility study, the failed Learned-DUG route, the successful Purpose-to-Reward compiler, and the first closed-loop RL confirmation study. The cumulative evidence is sharply structured. First, epistemic RL can improve experiment selection in a narrow causal-identification task, especially after suitable SFT. Second, understanding a scientific goal is learnable and transfers across held-out objective families, but this static goal understanding does not reliably induce experiment value. Third, natural-language scientific purposes can be compiled into executable terminal reward specifications with strong held-out generalization. Fourth, language-compiled rewards are non-inferior to manually specified rewards within the current RL pipeline. However, behavioral diagnostics show that the present closed-loop RL agents often exploit numerical shortcuts and do not yet demonstrate robust evidence-dependent scientific reasoning. Thus, reward specification is no longer the principal bottleneck; the central unresolved problem is how to make RL learn genuine evidence-utilizing, adaptive experimentation rather than merely improve aggregate benchmark return.
+\end{abstract}
+
+\section{Ultimate Research Goal}
+The project targets a single high-level question:
+\[
+\boxed{\text{Can reinforcement learning teach an LLM how to conduct scientific experiments?}}
+\]
+A scientific experimentation policy is taken to be a closed-loop policy
+\[
+\pi_\theta(e_t\mid q,h_t),
+\]
+where $q$ is a natural-language scientific purpose, $e_t$ is the experiment chosen at step $t$, and
+\[
+h_t=(D_0,e_1,y_1,\ldots,e_{t-1},y_{t-1})
+\]
+is the complete experimental history. The required behavior is therefore
+\[
+q,D_0
+\rightarrow e_1
+\rightarrow y_1
+\rightarrow e_2(y_1)
+\rightarrow y_2
+\rightarrow \cdots
+\rightarrow \texttt{STOP}
+\rightarrow d_T,
+\]
+where $d_T$ is the final scientific decision, estimate, prediction, or intervention.
+
+The intended claim is stronger than ``the model can choose one useful experiment.'' A successful model should satisfy four properties:
+\begin{enumerate}
+    \item \textbf{Goal conditioning:} experimental behavior should depend on the scientific purpose $q$.
+    \item \textbf{Evidence utilization:} behavior and final conclusions should depend on observed experimental outcomes.
+    \item \textbf{Adaptivity:} after different plausible outcomes, the model should choose different appropriate follow-up experiments when the scientific situation requires it.
+    \item \textbf{Efficiency:} the model should trade scientific benefit against experimental cost and learn when additional experiments are no longer worthwhile.
+\end{enumerate}
+At deployment on a new scientific problem, the desired model is frozen: no new reward engineering, RL, EIG oracle, DUG oracle, or external reward model should be required to select experiments.
+
+\section{Stage 0: Minimal Causal-System Pilot}
+\subsection{Purpose}
+The first experiment deliberately used a small causal-identification environment to test whether an LLM policy could be changed by epistemic RL before attempting more general scientific tasks.
+
+Let the hidden causal hypothesis be
+\[
+G^*\in\{G_1,\ldots,G_K\},
+\]
+and let the accumulated data at step $t$ be
+\[
+D_t=\{(e_1,y_1),\ldots,(e_t,y_t)\}.
+\]
+The posterior belief is
+\[
+b_t(G)=p(G\mid D_t).
+\]
+The LLM chooses an intervention
+\[
+e_t\sim\pi_\theta(e\mid s_t),
+\]
+the simulator returns
+\[
+y_{t+1}\sim p(y\mid G^*,e_t),
+\]
+and after a short experimental budget the model predicts the hidden graph.
+
+\subsection{Epistemic reward}
+For a discrete hypothesis posterior, entropy is
+\[
+H(b_t)=-\sum_G b_t(G)\log b_t(G).
+\]
+Realized information gain is
+\[
+r_t^{\mathrm{IG}}=H(b_t)-H(b_{t+1}).
+\]
+The original trajectory-level epistemic reward was
+\[
+R^{\mathrm{epi}}(\tau)
+=R_{\mathrm{final}}(\tau)+\beta\sum_{t=1}^{T}r_t^{\mathrm{IG}}.
+\]
+Outcome-only RL used
+\[
+R^{\mathrm{out}}(\tau)=R_{\mathrm{final}}(\tau).
+\]
+
+\subsection{Initial confirmed findings}
+Using the calibrated $5/7$ split, $n=200$, and BH--FDR correction, the initial study established:
+\begin{itemize}
+    \item Epistemic-RL did not significantly outperform Frozen on in-distribution evaluation after multiplicity correction.
+    \item Epistemic-RL did not significantly outperform Outcome-RL in the initial direct-RL regime.
+    \item Apparent gains under representation perturbations disappeared after correction and were attributable to false positives among a large family of tests.
+    \item A structured MLP with approximately $1.8\times10^4$ parameters outperformed every LLM configuration in the narrow causal pilot.
+    \item The first positive signal appeared after SFT: SFT$\rightarrow$RL improved substantially over the earlier configuration, and SFT+epistemic reward outperformed SFT+outcome reward in the exploratory comparison.
+\end{itemize}
+These results motivated a systematic mechanism ablation rather than an immediate scale-up.
+
+\section{Stage 1: Mechanistic Ablation of Epistemic RL}
+\subsection{Questions}
+The next experiment tested whether the weak direct-RL results arose from (i) the action-generation interface, (ii) state representation, (iii) temporal credit assignment, or (iv) token-level credit dilution.
+
+The main methods were:
+\begin{align*}
+\text{Trajectory-Epi:}\quad
+&R_i=R_{i,\mathrm{task}}+\beta\sum_t IG_{i,t},\\
+\text{Step-Epi:}\quad
+&A_{i,t}=A_i^{\mathrm{task}}+\beta A_{i,t}^{\mathrm{epi}},\\
+&A_{i,t}^{\mathrm{epi}}=\frac{IG_{i,t}-\mu_{IG,t}}{\sigma_{IG,t}+\epsilon},\\
+\text{Action-mask:}\quad
+&A_{i,j}=A_i^{\mathrm{task}}+\beta m_{i,j}A_{i,t}^{\mathrm{epi}},
+\end{align*}
+where $m_{i,j}=1$ only for action tokens. A long-horizon epistemic-return variant used
+\[
+G_{i,t}^{\mathrm{epi}}=\sum_{k=t}^{T}\gamma^{k-t}IG_{i,k}.
+\]
+
+\subsection{Main method comparison}
+The selected representation/interface was \texttt{nl / structured}, chosen by a preregistered rule on a disjoint validation set. The principal results are reproduced below as normalized regret (lower is better) / argmax experiment match (higher is better).
+
+\begin{center}
+\small
+\begin{tabular}{lcccc}
+\toprule
+Method & ID & Topology OOD & Scale OOD & rep\_all\\
+\midrule
+Instruct + Outcome & .492/.346 & .498/.351 & .500/.241 & .480/.344\\
+Instruct + Trajectory-Epi & .462/.376 & .489/.362 & .479/.265 & .469/.355\\
+Instruct + Step-Epi & .476/.360 & .488/.355 & .484/.261 & .455/.378\\
+Instruct + Step-Epi + Mask & .476/.361 & .490/.350 & .479/.266 & .461/.369\\
+Instruct + Epi-Return & .466/.370 & .478/.370 & .481/.257 & .454/.372\\
+Instruct + Epi-Return + Mask & .466/.366 & .481/.367 & .477/.260 & .470/.356\\
+SFT + Outcome & .404/.431 & .407/.437 & .437/.294 & .424/.400\\
+\textbf{SFT + Trajectory-Epi} & \textbf{.328/.510} & .329/.528 & .401/.325 & .343/.492\\
+\textbf{SFT + Epi-Return} & \textbf{.324/.515} & .332/.513 & .395/.323 & .349/.475\\
+\bottomrule
+\end{tabular}
+\end{center}
+Reference points were BED oracle $0.033/0.960$, structured MLP $0.219/0.639$, Frozen regret $0.491$, and Random regret $0.497$.
+
+\subsection{Preregistered hypotheses}
+The four preregistered contrasts were:
+\begin{center}
+\small
+\begin{tabular}{lccc}
+\toprule
+Hypothesis & Effect & 95\% CI & Decision\\
+\midrule
+H1: action-only Epi $>$ Outcome & $-0.0211$ & $[-0.0376,-0.0046]$ & supported\\
+H2: Step-Epi $>$ Trajectory-Epi & $+0.0127$ & $[-0.0020,+0.0274]$ & not supported\\
+H3: Step-Epi+Mask $>$ Step-Epi & $-0.0002$ & $[-0.0147,+0.0142]$ & not supported\\
+H4: SFT+best-Epi $>$ SFT+Outcome & $-0.0799$ & $[-0.0927,-0.0669]$ & supported\\
+\bottomrule
+\end{tabular}
+\end{center}
+For H1, H2, H3, and H4, the BH--FDR adjusted $p$ values were $0.0057$, $0.955$, $0.484$, and $<10^{-4}$, respectively.
+
+The mechanistic summary was:
+\begin{itemize}
+    \item SFT warm-start under epistemic reward: $\Delta$regret $=-0.1356$, $\Delta$EIG $=+0.0334$.
+    \item SFT warm-start under outcome reward: $\Delta$regret $=-0.0897$, $\Delta$EIG $=+0.0291$.
+    \item Epistemic versus outcome reward after SFT: $\Delta$regret $=-0.0799$, $\Delta$EIG $=+0.0171$.
+    \item Removing free-form CoT helped modestly ($\Delta$regret $=-0.0335$).
+    \item Hybrid and structured state representations helped only modestly ($-0.0121$ and $-0.0083$).
+    \item Epistemic return did not improve trajectory Epi ($\Delta$regret $=+0.0031$, $p=0.72$).
+    \item Action-token masking had essentially zero effect.
+    \item Step-level epistemic credit did not help and moved in the wrong direction.
+\end{itemize}
+Thus, fine-grained temporal/token credit was not the dominant explanation.
+
+\section{Stage 2: SFT Initialization Study (Round 2)}
+A follow-up sweep examined how the epistemic-RL advantage depended on the SFT checkpoint. Define
+\[
+\Delta_{\mathrm{epi}}(C)
+=J_{\mathrm{EpiRL}}(C)-J_{\mathrm{OutcomeRL}}(C),
+\]
+with the sign convention used in the experiment such that larger positive values indicated a larger epistemic-RL advantage.
+
+The empirical curve was \emph{inverted U-shaped}, not a threshold and not monotone scaling. The maximum occurred at checkpoint 500:
+\[
+\boxed{\Delta_{\mathrm{epi}}(\mathrm{ckpt500})=+0.116,}
+\]
+consistently across four splits, while checkpoint 2000 lost approximately 30\% of the peak gain.
+
+More importantly, different SFT curricula separated strongly:
+\begin{itemize}
+    \item Format-SFT: approximately $+0.015$ to $+0.038$ epistemic gain.
+    \item Reasoning-SFT: approximately $+0.003$ to $+0.019$.
+    \item Oracle-action SFT: substantially larger gain, peaking at $+0.116$.
+\end{itemize}
+This falsified the simple interpretation that ``competence'' meant merely understanding the posterior, hypotheses, or scientific state. The result instead implicated exposure to expert experimental-action preferences as an important optimization factor. This remains a supporting optimization finding rather than the final scientific objective of the project.
+
+\section{Conceptual Reset: From Causal Identification to General Scientific Purpose}
+The causal pilot was recognized as too narrow to define ``learning to experiment.'' A general scientific policy should not hard-code
+\[
+\text{good experiment}=\arg\max_e IG(e),
+\]
+because the value of an experiment depends on the scientific purpose. Examples include mechanism identification, parameter estimation, prediction, optimization, constrained optimization, and hypothesis testing.
+
+This motivated the explicit inclusion of a natural-language purpose $q$ and the distinction between three questions:
+\begin{enumerate}
+    \item What final decision or outcome is desirable under purpose $q$?
+    \item Which experiment is valuable for achieving that purpose?
+    \item Can RL train a closed-loop policy that learns the second capability through interaction?
+\end{enumerate}
+
+\section{Phase I: Language-Conditioned Scientific Utility}
+\subsection{Question}
+Phase I tested whether a model can infer, from a natural-language scientific purpose, which final decision is preferable. It did \emph{not} ask the model to design experiments.
+
+A learned utility/preference model received
+\[
+(q,\omega,d_A,d_B),
+\]
+where $q$ is the scientific purpose, $\omega$ is the hidden world/outcome state available for supervision, and $d_A,d_B$ are candidate final decisions. A Bradley--Terry-style model can be written as
+\[
+P_\phi(d_A\succ d_B\mid q,\omega)
+=\sigma\!\left(s_\phi(q,\omega,d_A)-s_\phi(q,\omega,d_B)\right).
+\]
+Six objective families were used: identification, parameter estimation, prediction, unconstrained optimization, constrained optimization, and hypothesis testing. Leave-one-family-out evaluation tested whether utility semantics transferred to unseen objective families.
+
+\subsection{Results}
+\begin{center}
+\small
+\begin{tabular}{lccccc}
+\toprule
+Method & IID & Phrase OOD & Domain OOD & Held-out family & Goal-flip\\
+\midrule
+B0 Random & .500 & .500 & .500 & .500 & .250\\
+B1 Zero-shot base & .503 & .516 & .508 & .503 & .000\\
+B3 No-goal control & .760 & .748 & .731 & .512 & .000\\
+B4 Structured oracle & .950 & .944 & .900 & .654 & .749\\
+\textbf{B2 Language goal} & \textbf{.948} & \textbf{.941} & \textbf{.905} & \textbf{.708} & \textbf{.732}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All five preregistered hypotheses passed:
+\begin{itemize}
+    \item P1 held-out family $>$ random: effect $+0.208$, 95\% CI $[+0.110,+0.306]$, BH--FDR $p<10^{-4}$.
+    \item P2 language goal $>$ no-goal: $+0.195$, CI $[+0.110,+0.281]$, $p<10^{-4}$.
+    \item P3 goal-flip $>$ random: $+0.482$, CI $[+0.288,+0.650]$, $p<10^{-4}$.
+    \item P4 trained $>$ zero-shot base: $+0.205$, CI $[+0.109,+0.303]$, $p<10^{-4}$.
+    \item P5 wording/domain OOD preservation: $+0.007$, CI $[+0.001,+0.015]$, $p=0.017$.
+\end{itemize}
+The no-goal model's split behavior was particularly diagnostic: it achieved $0.760$ IID but collapsed to $0.512$ on a held-out objective family, whereas the language-conditioned model retained $0.708$. Goal-flip accuracy of $0.732$ showed that changing only the purpose could reverse the learned preference while holding the world and candidate decisions fixed.
+
+Two limitations were recorded. The held-out hypothesis-testing family was near random for B2 ($0.505$), and structure identification was weak ($0.662$). Constrained optimization also showed a discrepancy between moderate ranking correlation and very large regret when a hard constraint was violated.
+
+The validated conclusion was therefore:
+\[
+\boxed{\text{LLMs can learn goal-dependent scientific utility semantics, but this is not yet experiment design.}}
+\]
+
+\section{Phase II-A: Can Learned Utility Induce Experiment Value?}
+\subsection{Learned-DUG hypothesis}
+The next route attempted to convert Phase-I utility into experimental value. For a task-specific utility $u_q(\omega,d)$, define the ideal decision value
+\[
+V^*(q,D)=\max_d\E_{\omega\sim p(\omega\mid D)}[u_q(\omega,d)].
+\]
+For experiment $e$ with possible observation $y$, oracle expected Decision Utility Gain (DUG) is
+\[
+\mathrm{DUG}^*(e\mid q,D)
+=
+\E_{y\sim p(y\mid e,D)}
+\left[V^*(q,D\cup\{e,y\})\right]-V^*(q,D).
+\]
+The learned analogue replaced $u_q$ with the frozen Phase-I score:
+\[
+\widehat V_\phi(q,D)
+=\max_d\E_{\omega\mid D}[\widetilde s_\phi(q,\omega,d)],
+\]
+where scores were normalized within the candidate decision set, and
+\[
+\widehat{\mathrm{DUG}}_\phi(e\mid q,D)
+=
+\E_y[\widehat V_\phi(q,D\cup\{e,y\})]-\widehat V_\phi(q,D).
+\]
+
+\subsection{Numerical reliability correction}
+The first implementation used importance sampling and initially produced an apparent NO-GO, but the oracle itself had poor repeatability. A diagnostic showed that cross-estimator agreement was approximately equal to within-estimator self-consistency, indicating estimator variance rather than systematic importance-sampling bias. The implementation was therefore corrected before drawing a final conclusion: F5 penalties were softened to remove a severe utility discontinuity, weighting was vectorized, $n_\omega/n_y$ was increased to $256/512$, and oracle self-consistency was introduced as a preregistered inclusion criterion. Folds with oracle self-consistency below $0.60$ were excluded from ranking-based inference. After correction, retained folds had self-consistency $0.755$--$0.876$ and ESS $120$--$127$ out of $256$. The F1 identify folds, with self-consistency around $0.529$, were excluded.
+
+\subsection{Final preregistered result: NO-GO}
+The corrected Phase II-A result remained negative:
+\begin{center}
+\small
+\begin{tabular}{lccc}
+\toprule
+Hypothesis & Effect & 95\% CI & Decision\\
+\midrule
+P6 Learned top-1 $>$ random $(1/6)$ & $+0.077$ & $[+0.053,+0.102]$ & supported\\
+P7 Learned regret $<$ Generic-EIG & $-0.227$ & $[-0.386,-0.079]$ & not supported\\
+P8 Learned ranking $>$ no-goal ranking & $+0.029$ & $[-0.053,+0.110]$ & not supported\\
+P9 gap recovery $\ge0.30$ & $-1.393$ & $[-1.924,-0.906]$ & not supported\\
+\bottomrule
+\end{tabular}
+\end{center}
+The adjusted $p$ values for P6--P9 were $<10^{-4}$, $1.000$, $0.251$, and $1.000$, respectively. Learned-DUG was above random, but lost to Generic-EIG in all $8/8$ reliable family$\times$transfer folds; gap recovery was negative in every retained fold. In F3 prediction, Generic-EIG achieved Spearman $0.604$ and regret $0.254$, whereas Learned-DUG achieved Spearman $0.177$ and regret $0.742$. Transfer-A and Transfer-B were nearly indistinguishable, showing that the failure was not explained simply by whether the utility model had seen the held-out family.
+
+Thus:
+\[
+\boxed{
+\text{Understanding which final decision fits a scientific goal does not reliably determine which experiment is worth performing.}
+}
+\]
+Per preregistration, the proposed Learned-DUG RL phase was not started.
+
+\section{Purpose-to-Reward: Compiling Scientific Purposes into Terminal RL Objectives}
+\subsection{Motivation}
+Phase II-A suggested that Phase-I goal understanding should not be used as a direct experiment-value estimator. A different question was therefore tested: can a natural-language scientific purpose be compiled into an executable \emph{terminal reward specification}, leaving the intermediate experimental strategy to RL?
+
+Let $G_\phi$ be a reward compiler:
+\[
+G_\phi(q)=\R_q.
+\]
+The generated specification defines task success, constraints, and experimental cost. A generic trajectory reward is
+\[
+R_q(\tau)
+=U_q(d_T,\omega^*)-\sum_{t=1}^{T}c_q(e_t),
+\]
+where $U_q$ is the terminal utility implied by the purpose and $c_q$ is the stated experimental cost. Importantly, $\R_q$ does not specify which intermediate experiment should be selected.
+
+Examples include
+\[
+R_q(\tau)
+=-L(\widehat K_m,K_m^*)-\lambda N_{\mathrm{exp}}
+\]
+for parameter estimation, and
+\[
+R_q(\tau)
+=f(d_T)-\lambda N_{\mathrm{exp}}-\eta\,[g(d_T)]_+
+\]
+for constrained optimization.
+
+\subsection{Behavioral evaluation}
+The compiler was evaluated by executing its generated reward on matched pairs of complete investigation trajectories $(\tau_A,\tau_B)$ and checking whether the induced preference matched the ground-truth scientific purpose. This avoided relying on exact textual/specification match.
+
+\subsection{Results}
+\begin{center}
+\small
+\begin{tabular}{lccccc}
+\toprule
+Method & IID & Phrase OOD & Held-out family & New composition & Goal-flip\\
+\midrule
+R0 Random spec & .559 & -- & .534 & .585 & --\\
+R1 Zero-shot base & .504 & .515 & .501 & .548 & .000\\
+R2 No-goal control & .871 & .871 & .575 & .734 & .000\\
+\textbf{R3 Language purpose} & \textbf{1.000} & \textbf{.984} & \textbf{.875} & \textbf{.885} & \textbf{.823}\\
+R4 Ground truth & 1.000 & -- & 1.000 & 1.000 & --\\
+\bottomrule
+\end{tabular}
+\end{center}
+All five preregistered hypotheses passed. In particular, held-out-family accuracy was $0.875$, language conditioning exceeded the no-goal control by $+0.300$, goal-flip was $0.823$ versus $0$ for the no-goal and zero-shot controls, and new objective+constraint compositions achieved $0.885$. Cost sensitivity was exact across the tested levels:
+\[
+0.00\mapsto0.000,\quad
+0.01\mapsto0.010,\quad
+0.05\mapsto0.050,\quad
+0.10\mapsto0.100,\quad
+0.20\mapsto0.200,
+\]
+with Spearman correlation $\rho=1.000$ between stated and compiled cost.
+
+The constrained-optimization fold F5 was the weakest held-out family ($0.625$), whereas hypothesis testing F6 reached $0.815$ despite being a failure case in Phase I. The main validated conclusion was:
+\[
+\boxed{
+\text{Natural-language scientific purposes can be compiled into executable terminal rewards with strong held-out generalization.}
+}
+\]
+This result supports using language as a reward-specification interface, but does not by itself demonstrate successful experimental behavior.
+
+\section{Closed-Loop RL with Manual and Language-Compiled Rewards}
+\subsection{Four conditions}
+The first closed-loop RL study used four conditions:
+\begin{center}
+\begin{tabular}{lp{0.72\linewidth}}
+\toprule
+Condition & Meaning\\
+\midrule
+M0 & Protocol SFT only; no RL.\\
+M1 & Outcome RL; evaluates task outcome but deliberately omits constraint and cost terms.\\
+M2 & Manual-spec RL; uses the manually written ground-truth reward specification.\\
+M3 & Language-compiled-reward RL; uses a frozen Purpose-to-Reward generator to compile the natural-language purpose into the reward specification.\\
+\bottomrule
+\end{tabular}
+\end{center}
+The primary metric was ID terminal utility regret under greedy decoding, always scored by the ground-truth reward, with oracle regret equal to zero.
+
+\subsection{Initial exploratory run and evaluation bug}
+An earlier exploratory closed-loop result suggested M3 approximately matched M2 and appeared to improve held-out F5 relative to M1. Those numerical values were later invalidated by a train-mode evaluation bug and are not used as evidence. The obsolete outputs were retained in the result files under \texttt{results\_trainmode\_bug} rather than overwritten. This motivated an explicit answer-rate gate and independent confirmatory replication.
+
+\subsection{Confirmatory design}
+The corrected study used $n=200$ episodes per split and five genuinely independent replicates, with the data generator modified so train/test worlds and SFT data varied across replicates. The four conditions yielded 20 training runs. The preregistered tests were:
+\begin{description}
+    \item[H1 (primary, equivalence/non-inferiority):]
+    \[
+    \mathrm{regret}(M3)-\mathrm{regret}(M2)<0.10
+    \]
+    in each informative replicate. The margin $0.10$ was set to approximately one quarter of the earlier exploratory SFT-to-RL effect size $0.408$.
+    \item[H2 (nontriviality):]
+    \[
+    \mathrm{regret}(M3)<\mathrm{regret}(M0)
+    \]
+    in each replicate.
+    \item[H3 (secondary reward-content sanity check):]
+    On held-out constrained family F5,
+    \[
+    \mathrm{regret}(M1)>\mathrm{regret}(M2),
+    \]
+    because M1 omits constraints and cost while M2 contains them.
+    \item[H4 (validity gate):]
+    \[
+    \mathrm{answer\_rate}=1.0.
+    \]
+    If this gate failed, the run would not be interpreted as a policy result.
+\end{description}
+
+\subsection{Confirmatory results}
+Across five independent replicates, the condition means on the primary ID metric were
+\[
+\begin{aligned}
+M0 &: 1.236\pm0.114,\\
+M1 &: 1.001\pm0.108,\\
+M2 &: 1.020\pm0.106,\\
+M3 &: 1.012\pm0.106.
+\end{aligned}
+\]
+The replicate-level H1 differences $M3-M2$ were
+\[
++0.0047,\;-0.0763,\;0.0000,\;+0.0565,\;-0.0271.
+\]
+One replicate underwent condition collapse and was not informative for the signed comparison. Among the four informative replicates, all satisfied the preregistered $0.10$ margin, with two positive and two negative differences. Across all five values, the mean difference was $-0.0106$ with SD $0.0558$.
+
+H2 passed in all $5/5$ replicates. H3 did not replicate: among informative replicates, two supported the expected direction and two opposed it. H4 passed: answer parsing rate was $1.000$.
+
+The correct interpretation of H1 is narrow but important:
+\[
+\boxed{
+\text{Within the current RL pipeline, language-compiled rewards are non-inferior to manually specified rewards under the preregistered margin.}
+}
+\]
+H1 does \emph{not} establish that either M2 or M3 learned genuine scientific experimentation.
+
+\section{Behavioral Collapse Diagnosis}
+A post hoc but necessary diagnostic evaluated 20 trained adapters on numerical task families ($n=100$). The correlation between predicted numerical answers and truth ranged only from
+\[
+-0.089\quad\text{to}\quad0.241.
+\]
+Numerical regret across adapters lay approximately in
+\[
+1.07\text{--}1.37.
+\]
+For comparison:
+\[
+\mathrm{regret}(\text{prior mean})=1.144,
+\qquad
+\mathrm{regret}(\text{always zero})=1.115,
+\]
+while non-response received regret $10$ and oracle regret was $0$.
+
+One replicate showed complete collapse in several RL conditions:
+\[
+\mathrm{frac}(\widehat d=0)=1,
+\qquad
+\mathrm{SD}(\widehat d)=0,
+\qquad
+\mathrm{corr}(\widehat d,d^*)=\mathrm{NaN}.
+\]
+The remaining replicates often showed partial collapse or near-prior behavior rather than meaningful numerical tracking.
+
+This substantially weakens the behavioral interpretation of H2. Although M3 improved aggregate benchmark regret over M0 in every replicate, the numerical-family improvement can be achieved largely by learning a strong prior/central-tendency shortcut rather than using experimental evidence. Likewise, H3's failure suggests that even a semantically correct full reward specification does not guarantee that RL learns to exploit its constraint and cost components.
+
+Thus the current evidence separates two achievements:
+\[
+\boxed{q\rightarrow R_q\quad\text{works well}}
+\]
+but
+\[
+\boxed{R_q\rightarrow\text{robust evidence-dependent experimentation}\quad\text{has not yet been demonstrated}.}
+\]
+
+\section{What Has Been Validated, Falsified, and Left Open}
+\subsection{Validated}
+\begin{enumerate}
+    \item \textbf{Narrow epistemic learning signal.} In the controlled causal-identification pilot, SFT+epistemic RL can improve experiment-selection regret relative to SFT+outcome RL.
+    \item \textbf{Fine-grained credit is not the main mechanism in that pilot.} Step-level epistemic credit, action-token masking, and long-horizon epistemic return did not improve the main trajectory-level method.
+    \item \textbf{Scientific purpose semantics are learnable.} A language-conditioned model can judge which final decision fits a held-out scientific objective, and its preferences change correctly under goal flips.
+    \item \textbf{Purpose-to-Reward is strongly supported.} Natural-language purposes can be compiled into executable terminal reward specifications, including objective direction, constraints, and experiment-cost strength.
+    \item \textbf{Compiled rewards survive RL substitution.} Under the current closed-loop pipeline, M3 is non-inferior to M2 under the preregistered $0.10$ margin.
+\end{enumerate}
+
+\subsection{Falsified or rejected routes}
+\begin{enumerate}
+    \item \textbf{Static utility $\Rightarrow$ experiment value.} Learned-DUG failed: although above random, it lost to Generic-EIG in all reliable folds and had negative gap recovery.
+    \item \textbf{Posterior/state understanding alone explains epistemic-RL gains.} Round-2 Reasoning-SFT produced much smaller gains than Oracle-action SFT.
+    \item \textbf{Step/token credit fixes the original causal pilot.} Neither step credit nor action-token masking helped.
+    \item \textbf{Current aggregate RL improvement proves scientific experimentation.} Numerical collapse diagnostics refute this interpretation.
+\end{enumerate}
+
+\subsection{Open bottleneck}
+The central unresolved question is now behavioral rather than representational:
+\[
+\boxed{
+\text{Why can an LLM optimize a correct scientific reward without robustly learning to use experimental evidence?}
+}
+\]
+Possible failure locations include (i) inability to infer from experimental observations even when evidence is high quality, (ii) experiment-selection failure, (iii) failure to adapt follow-up experiments to different outcomes, and (iv) reward/benchmark shortcuts that make prior-like answers competitive.
+
+\section{Next Diagnostic Experiment: Scientific Behavior Audit}
+No new reward model should be introduced before localizing the failure. The next study should use the manually specified M2 reward as the cleanest setting and evaluate existing M0/M2 models on newly generated diagnostic worlds. The main families should initially be F2 parameter estimation, F3 prediction, and F4 optimization.
+
+\subsection{A. Evidence-utilization test}
+For a matched base episode $(q,\omega,D_0,e_1)$, construct three variants:
+\begin{align*}
+\text{True: }& y_1\sim p(y\mid\omega,e_1),\\
+\text{Shuffled: }& \widetilde y_1=y_j\ \text{from a matched different world},\\
+\text{Masked: }& y_1=\texttt{[RESULT WITHHELD]}.
+\end{align*}
+The shuffled result should be matched by family, experiment, and approximate numerical scale to avoid trivial out-of-range artifacts. The primary contrast is
+\[
+\Delta_{\mathrm{shuffle}}
+=\mathrm{Regret}_{\mathrm{shuffle}}-\mathrm{Regret}_{\mathrm{true}}.
+\]
+A model that uses evidence should satisfy $\Delta_{\mathrm{shuffle}}>0$.
+
+For numerical tasks, also report
+\[
+\Delta_{\mathrm{corr}}
+=\mathrm{Corr}(\widehat d,d^*\mid\mathrm{true})
+-\mathrm{Corr}(\widehat d,d^*\mid\mathrm{shuffle}).
+\]
+
+\subsection{B. Oracle-evidence localization test}
+Remove experiment-selection responsibility and compare:
+\begin{enumerate}
+    \item B0: no additional experiment; model answers immediately;
+    \item B1: random non-adaptive experimental trajectory;
+    \item B2: oracle open-loop trajectory selected from $D_0$ but not adapted to outcomes;
+    \item B3: oracle adaptive trajectory $e_t^*=\pi^*(q,h_t)$ recomputed after each observed $y_t$.
+\end{enumerate}
+The LLM performs only final inference after receiving the resulting evidence. If
+\[
+\mathrm{Regret}_{B3}\approx\mathrm{Regret}_{B0},
+\]
+then high-quality evidence does not help the model and the bottleneck is inference/evidence integration. If
+\[
+\mathrm{Regret}_{B3}\ll\mathrm{Regret}_{B0}
+\]
+but M2 remains much worse than B3, the bottleneck is evidence acquisition/experimental policy.
+
+\subsection{C. Adaptive-branch test}
+Fix $(q,D_0,e_1)$ and sample plausible outcomes
+\[
+y^{(1)},\ldots,y^{(M)}\sim p(y\mid q,D_0,e_1).
+\]
+For each branch
+\[
+h_1^{(m)}=(D_0,e_1,y^{(m)}),
+\]
+compute a high-quality continuation value $Q^*(h_1^{(m)},e)$ over candidate next experiments. Retain matched branch pairs $(y_A,y_B)$ only when the preferred continuation differs and is separated by a preregistered value gap $\delta$:
+\[
+e_A^*\neq e_B^*,
+\]
+\[
+Q^*(h_A,e_A^*)-Q^*(h_A,e_B^*)>\delta,
+\qquad
+Q^*(h_B,e_B^*)-Q^*(h_B,e_A^*)>\delta.
+\]
+Then evaluate the model on prompts differing only in $y_A$ versus $y_B$.
+
+Raw sensitivity is
+\[
+S=\ind[\widehat e_A\neq\widehat e_B].
+\]
+A stronger metric is near-optimal branch success:
+\[
+\mathrm{NOB}
+=\ind[
+\widehat e_A\in\A_\delta(h_A)
+\land
+\widehat e_B\in\A_\delta(h_B)
+].
+\]
+This directly tests whether the model changes its next experiment in the correct direction after different evidence.
+
+\subsection{D. Shortcut baselines}
+Evaluate the same ground-truth reward under deliberately simple policies:
+\begin{align*}
+\pi_{\mathrm{prior}} &: \text{no experiment; output Bayes-optimal constant/prior answer},\\
+\pi_{0} &: \text{always output zero on numerical tasks},\\
+\pi_{\mathrm{noexp}} &: \text{trained LLM forced to stop immediately},\\
+\pi_{\mathrm{fixed}} &: \text{always execute the same population-optimal fixed experiment},\\
+\pi_{\mathrm{random}} &: \text{random experiments with matched experiment count},\\
+\pi_{\mathrm{oracle}} &: \text{adaptive oracle trajectory}.
+\end{align*}
+Define scientific gain over trivial strategies as
+\[
+\mathrm{ScientificGain}
+=J(M2)-\max\{J(\pi_{\mathrm{prior}}),J(\pi_0),J(\pi_{\mathrm{noexp}}),J(\pi_{\mathrm{fixed}})\},
+\]
+with signs adjusted consistently depending on whether $J$ is utility or regret.
+
+\subsection{Diagnostic subsets}
+Two subsets should be flagged in advance rather than used for post hoc cherry-picking.
+
+\paragraph{Experiment-needed subset.}
+Retain worlds for which the oracle experiment materially improves over a prior-only solution:
+\[
+\mathrm{Regret}_{\mathrm{prior}}(\omega)-
+\mathrm{Regret}_{\mathrm{oracle-exp}}(\omega)>\gamma.
+\]
+
+\paragraph{Evidence-matters subset.}
+Retain worlds for which the optimal conclusion changes materially after informative evidence, e.g.
+\[
+|d^*(D_0)-d^*(D_1)|>\eta
+\]
+for numerical tasks, or $d^*(D_0)\neq d^*(D_1)$ for discrete decisions.
+
+\subsection{Decision tree after the audit}
+The next algorithmic step should depend on the audit:
+\begin{enumerate}
+    \item If oracle evidence does not improve final inference, prioritize evidence-integration/inference training rather than experiment RL.
+    \item If oracle evidence helps but M2-selected evidence does not, prioritize experiment-selection learning.
+    \item If evidence is used but near-optimal branch success is near random, prioritize adaptive replanning/long-horizon credit.
+    \item If trivial policies approach M2, redesign the benchmark/reward landscape before further RL.
+\end{enumerate}
+
+\section{Candidate Future Algorithm if the Audit Localizes a Sequential-Credit Failure}
+If the audit establishes that the model can use good evidence but fails to acquire/adapt it, a consequence-based counterfactual RL method becomes justified. At history $h_t$, sample candidate experiments $e^{(1)},\ldots,e^{(K)}$. For each experiment, sample possible outcomes and continue with the current policy:
+\[
+h_t\xrightarrow{e^{(k)}}y^{(k,m)}\xrightarrow{\pi_\theta}\cdots\xrightarrow{}d_T.
+\]
+Score the complete continuation with the correct terminal scientific reward:
+\[
+R_q(\tau_{k,m})=U_q(d_T,\omega^*)-\sum_j c_q(e_j).
+\]
+Estimate the policy-contingent action value
+\[
+\widehat Q^{\pi_\theta}(q,h_t,e^{(k)})
+=\frac{1}{M}\sum_{m=1}^{M}R_q(\tau_{k,m}).
+\]
+A group-relative advantage is
+\[
+A_k
+=\frac{\widehat Q_k-\overline Q}{s_Q+\epsilon}.
+\]
+The policy update then increases the probability of experiments whose \emph{downstream closed-loop consequences} are better, rather than experiments that maximize a hand-designed acquisition function.
+
+With a \texttt{STOP} action, the action set is
+\[
+\A_t=\{e_1,\ldots,e_K,\texttt{STOP}\},
+\]
+and experimental cost enters naturally through
+\[
+R_q(\tau)=U_q(d_T,\omega^*)-\sum_{t=1}^{T}c_q(e_t).
+\]
+Thus the model can in principle learn both what to do next and when another experiment is not worth its cost.
+
+This algorithm is intentionally left as a \emph{conditional next step}, not as a validated contribution. It should only be implemented if the behavioral audit demonstrates that the current bottleneck lies in experiment selection/adaptive planning rather than inference or benchmark shortcuts.
+
+\section{Current Overall Interpretation}
+The project has progressed through several hypotheses rather than monotonically confirming one original design. The strongest current synthesis is:
+\[
+\boxed{
+\begin{array}{l}
+\text{(i) LLMs can learn the semantics of scientific purposes;}\\
+\text{(ii) those purposes can be compiled into executable terminal RL rewards;}\\
+\text{(iii) compiled rewards can substitute for manual rewards in the current RL pipeline;}\\
+\text{(iv) static utility understanding does not reliably produce experiment value;}\\
+\text{(v) improved benchmark return does not yet imply evidence-dependent experimentation.}
+\end{array}}
+\]
+The project therefore no longer lacks a general way to specify what a scientific task is trying to accomplish. The unresolved problem is whether and how RL can transform such objectives into genuine closed-loop scientific behavior. The immediate next step is not another reward-design variant, but a controlled behavioral localization study that distinguishes evidence-use failure, inference failure, experiment-selection failure, adaptive-planning failure, and benchmark shortcut exploitation.
+
+\section{Status Table}
+\begin{center}
+\small
+\begin{tabular}{p{0.23\linewidth}p{0.47\linewidth}p{0.20\linewidth}}
+\toprule
+Stage & Question & Status\\
+\midrule
+Causal pilot & Can epistemic RL improve a narrow experiment-selection policy? & Partial positive\\
+Mechanism ablation & Are step credit/token masking the key? & No\\
+Round 2 & Does SFT initialization alter epistemic-RL learnability? & Yes; inverted-U, oracle-action SFT strongest\\
+Phase I & Can language specify what final decision fits a new scientific goal? & \textbf{STRONG GO}\\
+Phase II-A & Can that learned utility be converted into useful experiment value via Learned-DUG? & \textbf{NO-GO}\\
+Purpose-to-Reward & Can language compile a new purpose into an executable terminal reward? & \textbf{STRONG GO}\\
+Closed-loop H1 & Is compiled reward non-inferior to manual reward? & Supported\\
+Closed-loop H2 & Does compiled-reward RL improve aggregate regret over protocol SFT? & Supported, but behaviorally weakened\\
+Closed-loop H3 & Do constraint/cost reward terms robustly help held-out constrained tasks? & Not supported\\
+Behavioral competence & Has the current RL agent learned robust evidence-dependent scientific experimentation? & \textbf{Not established}\\
+Next audit & Where does the behavior fail: inference, evidence use, selection, adaptation, or benchmark design? & Pending\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}
